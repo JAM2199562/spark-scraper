@@ -3,6 +3,13 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+# 尝试加载python-dotenv来读取.env文件
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    print("警告: python-dotenv 未安装，将直接使用环境变量")
+
 @dataclass
 class Config:
     """应用配置类"""
@@ -21,6 +28,10 @@ class Config:
     # 时区偏移（小时）
     timezone_offset_hours: int = 8
     
+    # Bark推送配置
+    bark_endpoint: str = ""
+    bark_push_on_startup: bool = True
+    
     @classmethod
     def from_env(cls) -> "Config":
         """从环境变量加载配置"""
@@ -30,4 +41,6 @@ class Config:
             api_url=os.getenv("API_URL", "https://brc20-api.luminex.io/regtest/spark/pulse"),
             browser_headless=os.getenv("BROWSER_HEADLESS", "false").lower() == "true",
             timezone_offset_hours=int(os.getenv("TIMEZONE_OFFSET_HOURS", "8")),
+            bark_endpoint=os.getenv("BARK_ENDPOINT", ""),
+            bark_push_on_startup=os.getenv("BARK_PUSH_ON_STARTUP", "true").lower() == "true",
         )

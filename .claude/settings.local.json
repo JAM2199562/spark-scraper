@@ -4,7 +4,8 @@
       "Bash(uv sync:*)",
       "Bash(uv:*)",
       "Bash(python:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(timeout 10s python main.py --debug --headless)"
     ],
     "deny": []
   }

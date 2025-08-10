@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import List, Optional
 from config import Config
 from models import Token, TokenStore
+from bark_notifier import BarkNotifier
 
 try:
     from playwright.async_api import async_playwright
@@ -28,6 +29,13 @@ class SparkScraper:
         self.is_first_run = True
         self.initial_new_coin_data = None
         self.debug = debug  # 调试模式标志
+        
+        # 初始化Bark推送器
+        self.bark_notifier = BarkNotifier(config.bark_endpoint, debug=debug)
+        if self.bark_notifier.is_enabled():
+            print(f"📱 Bark推送已启用: {config.bark_endpoint}")
+        elif debug:
+            print("📱 Bark推送未配置")
     
     async def init_browser(self):
         """初始化浏览器（仅一次）"""
@@ -107,6 +115,10 @@ class SparkScraper:
                                     display_tokens = sorted_tokens[:3]
                                     print(f"\n🪙 当前最新的 {len(display_tokens)} 个代币:")
                                     self._print_token_list(display_tokens)
+                                    
+                                    # 发送启动推送（如果配置了）
+                                    if self.bark_notifier.is_enabled() and self.config.bark_push_on_startup:
+                                        asyncio.create_task(self._send_startup_notification(display_tokens))
                                 
                                 # 切换到监听模式
                                 self.is_first_run = False
@@ -265,8 +277,34 @@ class SparkScraper:
         if new_tokens:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 发现新代币!")
             self.print_tokens(new_tokens, all_tokens)
+            
+            # 发送Bark推送通知
+            if self.bark_notifier.is_enabled():
+                asyncio.create_task(self._send_new_token_notification(new_tokens))
         else:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 📡 收到新币API响应，暂无符合条件的新代币")
+    
+    async def _send_new_token_notification(self, tokens: List[Token]):
+        """发送新代币通知"""
+        try:
+            success = await self.bark_notifier.send_new_token_message(tokens)
+            if success:
+                print(f"📱 已推送新代币通知")
+            else:
+                print(f"⚠️ 新代币通知推送失败")
+        except Exception as e:
+            print(f"❌ 推送新代币通知时出错: {e}")
+    
+    async def _send_startup_notification(self, tokens: List[Token]):
+        """发送启动通知"""
+        try:
+            success = await self.bark_notifier.send_startup_message(tokens)
+            if success:
+                print(f"📱 已推送启动通知")
+            elif self.debug:
+                print(f"⚠️ 启动通知推送失败")
+        except Exception as e:
+            print(f"❌ 推送启动通知时出错: {e}")
     
     async def run_once(self):
         """执行一次监控"""
