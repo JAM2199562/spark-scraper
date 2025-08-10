@@ -42,9 +42,25 @@ class SparkScraper:
             async def handle_response(response):
                 if self.config.api_url in response.url:
                     try:
-                        data = await response.json()
-                        self.api_response_data = data.get("data", [])
-                        print(f"捕获到API响应，包含 {len(self.api_response_data)} 个代币")
+                        # 获取请求的载荷
+                        request = response.request
+                        post_data = request.post_data
+                        
+                        # 检查是否是新币请求
+                        if post_data and '"category":"new"' in post_data:
+                            print(f"🔍 捕获到新币API请求")
+                            data = await response.json()
+                            self.api_response_data = data.get("data", [])
+                            print(f"📈 新币数据：包含 {len(self.api_response_data)} 个代币")
+                        else:
+                            # 忽略非新币请求
+                            if post_data:
+                                if '"category":"migrated"' in post_data:
+                                    print("📦 忽略已迁移代币请求")
+                                elif '"category":"final"' in post_data:
+                                    print("⏰ 忽略即将结束交易窗口请求")
+                            return
+                            
                     except Exception as e:
                         print(f"解析API响应失败: {e}")
             
@@ -100,16 +116,18 @@ class SparkScraper:
             print(f"API直接调用失败: {e}")
             return None
     
-    def process_tokens(self, api_data: List[dict]) -> List[Token]:
-        """处理代币数据"""
+    def process_tokens(self, api_data: List[dict]) -> tuple[List[Token], List[Token]]:
+        """处理代币数据，返回 (新代币列表, 所有代币列表)"""
         if not api_data:
-            return []
+            return [], []
         
         new_tokens = []
+        all_tokens = []
         
         for item in api_data:
             try:
                 token = Token.from_api_data(item)
+                all_tokens.append(token)
                 
                 if self.is_first_run:
                     # 首次运行：显示过去30分钟内创建的代币
@@ -126,23 +144,32 @@ class SparkScraper:
                 print(f"处理代币数据失败: {e}")
                 continue
         
-        return new_tokens
+        return new_tokens, all_tokens
     
-    def print_new_tokens(self, tokens: List[Token]):
-        """打印新代币信息"""
-        if not tokens:
-            if self.is_first_run:
+    def print_tokens(self, new_tokens: List[Token], all_tokens: List[Token]):
+        """打印代币信息"""
+        if self.is_first_run:
+            if new_tokens:
+                print(f"\n📈 过去30分钟内创建的代币 ({len(new_tokens)} 个):")
+                self._print_token_list(new_tokens)
+            else:
+                # 首次启动没有新代币时，显示最新的几个代币信息
                 print("过去30分钟内没有新创建的代币")
+                if all_tokens:
+                    print(f"\n🪙 当前所有代币信息 (显示最新 {min(3, len(all_tokens))} 个):")
+                    # 按创建时间排序，显示最新的3个
+                    sorted_tokens = sorted(all_tokens, key=lambda x: x.token_created_at, reverse=True)
+                    self._print_token_list(sorted_tokens[:3])
+        else:
+            if new_tokens:
+                print(f"\n🎉 发现 {len(new_tokens)} 个新代币:")
+                self._print_token_list(new_tokens)
             else:
                 print("没有发现新代币")
-            return
-        
-        if self.is_first_run:
-            print(f"\n📈 过去30分钟内创建的代币 ({len(tokens)} 个):")
-        else:
-            print(f"\n🎉 发现 {len(tokens)} 个新代币:")
+    
+    def _print_token_list(self, tokens: List[Token]):
+        """打印代币列表"""
         print("-" * 80)
-        
         for token in tokens:
             print(f"代币名称: {token.name}")
             print(f"代币符号: {token.ticker}")
@@ -172,44 +199,89 @@ class SparkScraper:
             return
         
         # 处理代币数据
-        new_tokens = self.process_tokens(api_data)
+        new_tokens, all_tokens = self.process_tokens(api_data)
         
         # 打印结果
-        self.print_new_tokens(new_tokens)
+        self.print_tokens(new_tokens, all_tokens)
         
         # 标记首次运行完成
         if self.is_first_run:
             self.is_first_run = False
     
     async def run_continuous(self):
-        """持续运行监控"""
+        """持续运行监控 - 监听模式"""
         print(f"🚀 Spark代币监控器启动!")
         print(f"📡 监控地址: {self.config.monitor_url}")
-        print(f"⏰ 检查间隔: {self.config.check_interval_minutes} 分钟")
         print(f"🔍 浏览器模式: {'隐藏' if self.config.browser_headless else '可见'}")
-        print("🔄 浏览器将保持打开状态，避免重复初始化")
+        print("👂 监听模式：持续监听网页自动执行的API请求")
         print("=" * 80)
         
         try:
+            # 初始化浏览器并保持打开状态
+            await self.init_browser()
+            
+            # 首次访问页面获取初始数据
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 首次启动，检查过去30分钟内的新代币...")
+            try:
+                await self.page.goto(self.config.monitor_url, wait_until="networkidle", timeout=60000)  # 增加到60秒
+                await asyncio.sleep(5)  # 等待初始API调用完成
+            except Exception as e:
+                print(f"页面加载超时或失败，但继续运行: {e}")
+                # 不要因为页面加载失败就退出，继续监听
+            
+            # 检查是否有初始数据
+            if hasattr(self, 'api_response_data') and self.api_response_data:
+                new_tokens, all_tokens = self.process_tokens(self.api_response_data)
+                self.print_tokens(new_tokens, all_tokens)
+                self.is_first_run = False
+            else:
+                print("初始数据获取失败，但程序继续运行监听模式")
+            
+            print(f"\n🔄 现在持续监听网页自动执行的API请求...")
+            print("💡 网页会自动刷新并执行API请求，无需手动干预")
+            print("⏹️  按 Ctrl+C 退出监控\n")
+            
+            # 设置API响应监听器处理新数据
+            async def handle_response(response):
+                if self.config.api_url in response.url:
+                    try:
+                        # 获取请求的载荷
+                        request = response.request
+                        post_data = request.post_data
+                        
+                        # 只处理新币请求
+                        if post_data and '"category":"new"' in post_data:
+                            print(f"🔍 捕获到新币API请求")
+                            data = await response.json()
+                            api_data = data.get("data", [])
+                            print(f"📈 新币数据：包含 {len(api_data)} 个代币")
+                            
+                            # 处理数据并显示结果
+                            new_tokens, all_tokens = self.process_tokens(api_data)
+                            
+                            if new_tokens:
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 发现新代币!")
+                                self.print_tokens(new_tokens, all_tokens)
+                            else:
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] 📡 收到新币API响应，暂无符合条件的新代币")
+                        else:
+                            # 忽略非新币请求，静默处理
+                            pass
+                            
+                    except Exception as e:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] 解析API响应失败: {e}")
+            
+            # 重新绑定响应监听器
+            self.page.on("response", handle_response)
+            
+            # 保持程序运行，持续监听
             while True:
-                try:
-                    await self.run_once()
+                await asyncio.sleep(1)  # 保持事件循环运行
                     
-                    # 等待下次检查
-                    if self.is_first_run:  # 这个判断其实不会成立，因为run_once会设置为False
-                        print(f"\n⏱️  首次检查完成，等待 {self.config.check_interval_minutes} 分钟后进行定时检查...\n")
-                    else:
-                        print(f"\n⏱️  等待 {self.config.check_interval_minutes} 分钟后进行下次检查...\n")
-                    
-                    await asyncio.sleep(self.config.check_interval_minutes * 60)
-                    
-                except KeyboardInterrupt:
-                    print("\n👋 用户中断，程序退出")
-                    break
-                except Exception as e:
-                    print(f"❌ 运行出错: {e}")
-                    print("⏱️  5秒后重试...")
-                    await asyncio.sleep(5)
+        except KeyboardInterrupt:
+            print("\n👋 用户中断，程序退出")
+        except Exception as e:
+            print(f"❌ 运行出错: {e}")
         finally:
             # 确保浏览器被正确关闭
             await self.close_browser()
