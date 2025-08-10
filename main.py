@@ -25,6 +25,7 @@ class SparkScraper:
         self.context = None
         self.page = None
         self.is_first_run = True
+        self.initial_new_coin_data = None  # 移到这里初始化
     
     async def init_browser(self):
         """初始化浏览器（仅一次）"""
@@ -50,16 +51,42 @@ class SparkScraper:
                         if post_data and '"category":"new"' in post_data:
                             print(f"🔍 捕获到新币API请求")
                             data = await response.json()
-                            self.api_response_data = data.get("data", [])
-                            print(f"📈 新币数据：包含 {len(self.api_response_data)} 个代币")
+                            api_data = data.get("data", [])
+                            print(f"📈 新币数据：包含 {len(api_data)} 个代币")
+                            
+                            # 如果是初始化阶段，立即处理并显示前3个代币
+                            if self.is_first_run and len(api_data) > 0:
+                                print("📊 首次启动，显示最新3个代币...")
+                                
+                                # 解析所有代币
+                                all_tokens = []
+                                for item in api_data:
+                                    try:
+                                        token = Token.from_api_data(item)
+                                        all_tokens.append(token)
+                                        # 标记为已见过
+                                        self.token_store.add_token(token)
+                                    except Exception as e:
+                                        print(f"处理代币数据失败: {e}")
+                                        continue
+                                
+                                # 显示最新的3个
+                                if all_tokens:
+                                    sorted_tokens = sorted(all_tokens, key=lambda x: x.token_created_at, reverse=True)
+                                    display_tokens = sorted_tokens[:3]
+                                    print(f"\n🪙 当前最新的 {len(display_tokens)} 个代币:")
+                                    self._print_token_list(display_tokens)
+                                
+                                # 切换到监听模式
+                                self.is_first_run = False
+                                print("✨ 初始化完成，切换到监听模式")
+                            
+                            # 如果是正常监听模式，检查新代币
+                            elif not self.is_first_run:
+                                self._process_and_display_tokens(api_data)
                         else:
-                            # 忽略非新币请求
-                            if post_data:
-                                if '"category":"migrated"' in post_data:
-                                    print("📦 忽略已迁移代币请求")
-                                elif '"category":"final"' in post_data:
-                                    print("⏰ 忽略即将结束交易窗口请求")
-                            return
+                            # 忽略非新币请求，静默处理
+                            pass
                             
                     except Exception as e:
                         print(f"解析API响应失败: {e}")
@@ -179,6 +206,16 @@ class SparkScraper:
                 print(f"描述: {token.description}")
             print("-" * 80)
     
+    def _process_and_display_tokens(self, api_data: list):
+        """处理并显示代币数据"""
+        new_tokens, all_tokens = self.process_tokens(api_data)
+        
+        if new_tokens:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 发现新代币!")
+            self.print_tokens(new_tokens, all_tokens)
+        else:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📡 收到新币API响应，暂无符合条件的新代币")
+    
     async def run_once(self):
         """执行一次监控"""
         if self.is_first_run:
@@ -221,21 +258,13 @@ class SparkScraper:
             await self.init_browser()
             
             # 首次访问页面获取初始数据
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 首次启动，检查过去30分钟内的新代币...")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 首次启动，等待网页加载...")
             try:
-                await self.page.goto(self.config.monitor_url, wait_until="networkidle", timeout=60000)  # 增加到60秒
-                await asyncio.sleep(5)  # 等待初始API调用完成
+                await self.page.goto(self.config.monitor_url, wait_until="networkidle", timeout=60000)
+                print("📡 页面加载完成，监听器已激活")
             except Exception as e:
-                print(f"页面加载超时或失败，但继续运行: {e}")
-                # 不要因为页面加载失败就退出，继续监听
-            
-            # 检查是否有初始数据
-            if hasattr(self, 'api_response_data') and self.api_response_data:
-                new_tokens, all_tokens = self.process_tokens(self.api_response_data)
-                self.print_tokens(new_tokens, all_tokens)
+                print(f"页面加载失败: {e}")
                 self.is_first_run = False
-            else:
-                print("初始数据获取失败，但程序继续运行监听模式")
             
             print(f"\n🔄 现在持续监听网页自动执行的API请求...")
             print("💡 网页会自动刷新并执行API请求，无需手动干预")
@@ -257,13 +286,7 @@ class SparkScraper:
                             print(f"📈 新币数据：包含 {len(api_data)} 个代币")
                             
                             # 处理数据并显示结果
-                            new_tokens, all_tokens = self.process_tokens(api_data)
-                            
-                            if new_tokens:
-                                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 发现新代币!")
-                                self.print_tokens(new_tokens, all_tokens)
-                            else:
-                                print(f"[{datetime.now().strftime('%H:%M:%S')}] 📡 收到新币API响应，暂无符合条件的新代币")
+                            self._process_and_display_tokens(api_data)
                         else:
                             # 忽略非新币请求，静默处理
                             pass
