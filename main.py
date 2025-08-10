@@ -1,4 +1,5 @@
 """爬虫核心逻辑"""
+import argparse
 import asyncio
 import json
 import time
@@ -18,25 +19,50 @@ except ImportError as e:
 class SparkScraper:
     """Spark代币监控爬虫"""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, debug: bool = False):
         self.config = config
         self.token_store = TokenStore()
         self.browser = None
         self.context = None
         self.page = None
         self.is_first_run = True
-        self.initial_new_coin_data = None  # 移到这里初始化
+        self.initial_new_coin_data = None
+        self.debug = debug  # 调试模式标志
     
     async def init_browser(self):
         """初始化浏览器（仅一次）"""
         if self.browser is None:
             print("🔧 初始化浏览器...")
+            if self.debug:
+                print(f"🔍 浏览器模式: {'无头模式' if self.config.browser_headless else '可见模式'}")
+            
             playwright = await async_playwright().start()
+            
+            # 无头模式添加更多启动参数
+            if self.config.browser_headless:
+                browser_args = [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--disable-gpu'
+                ]
+            else:
+                browser_args = ['--no-sandbox']
+            
+            if self.debug:
+                print(f"🚀 启动参数: {browser_args}")
+            
             self.browser = await playwright.chromium.launch(
                 headless=self.config.browser_headless,
-                args=['--no-sandbox'] if self.config.browser_headless else None
+                args=browser_args
             )
-            self.context = await self.browser.new_context()
+            self.context = await self.browser.new_context(
+                # 无头模式设置用户代理
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
             self.page = await self.context.new_page()
             
             # 设置网络请求监听器
@@ -46,6 +72,11 @@ class SparkScraper:
                         # 获取请求的载荷
                         request = response.request
                         post_data = request.post_data
+                        
+                        if self.debug:
+                            print(f"🌐 检测到API请求: {response.url}")
+                            print(f"📦 请求载荷: {post_data}")
+                            print(f"📊 响应状态: {response.status}")
                         
                         # 检查是否是新币请求
                         if post_data and '"category":"new"' in post_data:
@@ -85,13 +116,34 @@ class SparkScraper:
                             elif not self.is_first_run:
                                 self._process_and_display_tokens(api_data)
                         else:
-                            # 忽略非新币请求，静默处理
-                            pass
+                            if self.debug:
+                                print(f"⏭️ 忽略非新币请求: {post_data}")
                             
                     except Exception as e:
-                        print(f"解析API响应失败: {e}")
+                        print(f"❌ 解析API响应失败: {e}")
+                        if self.debug:
+                            import traceback
+                            traceback.print_exc()
             
             self.page.on("response", handle_response)
+            
+            # 只在调试模式下添加请求监听器
+            if self.debug:
+                async def handle_request(request):
+                    if self.config.api_url in request.url:
+                        print(f"📤 发出API请求: {request.url}")
+                        print(f"📝 请求方法: {request.method}")
+                        if request.post_data:
+                            print(f"📋 请求载荷: {request.post_data}")
+                
+                self.page.on("request", handle_request)
+                
+                # 添加页面错误监听
+                def handle_page_error(error):
+                    print(f"🚨 页面错误: {error}")
+                
+                self.page.on("pageerror", handle_page_error)
+            
             print("✅ 浏览器初始化完成")
     
     async def fetch_data_via_browser(self) -> Optional[List[dict]]:
@@ -259,11 +311,44 @@ class SparkScraper:
             
             # 首次访问页面获取初始数据
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 首次启动，等待网页加载...")
+            if self.debug:
+                print(f"🌐 目标URL: {self.config.monitor_url}")
+            
             try:
+                if self.debug:
+                    print("📡 开始加载页面...")
                 await self.page.goto(self.config.monitor_url, wait_until="networkidle", timeout=60000)
-                print("📡 页面加载完成，监听器已激活")
+                print("✅ 页面加载完成，监听器已激活")
+                
+                if self.debug:
+                    # 检查页面状态
+                    title = await self.page.title()
+                    print(f"📄 页面标题: {title}")
+                    
+                    url = self.page.url
+                    print(f"🔗 当前URL: {url}")
+                    
+                    # 等待一下让JavaScript执行
+                    print("⏳ 等待5秒让JavaScript执行...")
+                    await asyncio.sleep(5)
+                    
+                    # 检查页面是否有JavaScript错误
+                    await self.page.evaluate("console.log('页面JavaScript可以正常执行')")
+                    print("✅ JavaScript执行正常")
+                
             except Exception as e:
-                print(f"页面加载失败: {e}")
+                print(f"❌ 页面加载失败: {e}")
+                if self.debug:
+                    print(f"🔍 错误类型: {type(e).__name__}")
+                    
+                    # 尝试获取页面状态
+                    try:
+                        if hasattr(self, 'page') and self.page:
+                            url = self.page.url
+                            print(f"🌐 当前页面URL: {url}")
+                    except:
+                        print("⚠️ 无法获取页面状态")
+                
                 self.is_first_run = False
             
             print(f"\n🔄 现在持续监听网页自动执行的API请求...")
@@ -313,11 +398,21 @@ class SparkScraper:
 
 async def main():
     """主函数"""
+    # 添加命令行参数解析
+    parser = argparse.ArgumentParser(description='Spark代币监控器')
+    parser.add_argument('--headless', action='store_true', help='使用无头模式运行浏览器')
+    parser.add_argument('--debug', action='store_true', help='启用调试模式，输出详细日志')
+    args = parser.parse_args()
+    
     # 加载配置
     config = Config.from_env()
     
+    # 如果指定了命令行参数，覆盖配置
+    if args.headless:
+        config.browser_headless = True
+    
     # 创建爬虫实例
-    scraper = SparkScraper(config)
+    scraper = SparkScraper(config, debug=args.debug)
     
     # 运行
     await scraper.run_continuous()
