@@ -87,6 +87,7 @@ class BarkNotifier:
             body = f"监控器已启动，当前最新的{len(tokens)}个代币:\n"
             for i, token in enumerate(tokens, 1):
                 body += f"{i}. {token.name} ({token.ticker})\n"
+                body += f"   合约地址: {token.token_address}\n"
         
         return await self.send_message(title, body)
     
