@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv sync:*)",
+      "Bash(uv:*)",
+      "Bash(python:*)",
+      "Bash(curl:*)"
+    ],
+    "deny": []
+  }
+}
