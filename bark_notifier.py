@@ -84,9 +84,9 @@ class BarkNotifier:
             body = "监控器已启动，当前没有新代币"
         else:
             title = "🚀 Spark监控器启动"
-            body = f"监控器已启动，当前最新的{len(tokens)}个代币:\\n"
+            body = f"监控器已启动，当前最新的{len(tokens)}个代币:\n"
             for i, token in enumerate(tokens, 1):
-                body += f"{i}. {token.name} ({token.ticker})\\n"
+                body += f"{i}. {token.name} ({token.ticker})\n"
         
         return await self.send_message(title, body)
     
